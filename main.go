@@ -52,10 +52,10 @@ func NewCalendar() *Calendar {
 	return &Calendar{WeekLabels: DefaultWeeekLabels, IsDayOffFunc: DefaultIsDayOffFunc, Date: time.Now()}
 }
 
-func DrawCalendar(img *gg.Context, c *Calendar, x, y, w, h int) {
+func DrawCalendar(img *gg.Context, c *Calendar, x, y, w, h int, label bool) {
 	red := color.RGBA{255, 0, 0, 255}
 	wc := len(c.WeekLabels)
-	start := ToDate(c.Date)
+	start := ToDate(c.Date.AddDate(0, 0, -c.Date.Day()+1))
 	last := start.AddDate(0, 1, 0)
 	numdays := int(last.Sub(start).Hours()) / 24
 	selected := int(c.SelectedDate.Sub(start).Hours()) / 24
@@ -64,27 +64,29 @@ func DrawCalendar(img *gg.Context, c *Calendar, x, y, w, h int) {
 	colsize := w / wc
 	rowsize := (h - space) / 7
 
-	for i, d := range c.WeekLabels {
-		if i == 0 {
-			img.SetColor(red)
-		} else {
-			img.SetColor(color.Black)
+	if label {
+		for i, d := range c.WeekLabels {
+			if i == 0 {
+				img.SetColor(red)
+			} else {
+				img.SetColor(color.Black)
+			}
+			img.DrawString(d, float64(x+i*colsize), float64(y+rowsize-4))
 		}
-		img.DrawString(d, float64(x+i*colsize), float64(y+rowsize-4))
+		y += rowsize + space
 	}
-	y += rowsize + space
 	for d := 0; d < numdays; d++ {
 		day := start.AddDate(0, 0, d)
 		wd := int(day.Weekday())
-		if selected == d {
-			img.SetColor(red)
-			img.DrawRectangle(float64(x+wd*colsize+1), float64(y+1), float64(colsize-2), float64(rowsize-2))
-			img.Stroke()
-		}
 		if c.IsDayOffFunc(day) {
 			img.SetColor(red)
 		} else {
 			img.SetColor(color.Black)
+		}
+		if selected == d {
+			img.DrawRectangle(float64(x+wd*colsize+1), float64(y+1), float64(colsize-2), float64(rowsize-2))
+			img.Fill()
+			img.SetColor(color.White)
 		}
 		img.DrawString(fmt.Sprintf(" %2d", day.Day()), float64(x+wd*colsize), float64(y+rowsize-5))
 		if wd == 6 {
@@ -172,8 +174,14 @@ func writeImage(w io.Writer, date time.Time) error {
 
 	dc.SetFontFace(faces[0])
 	dc.SetColor(color.Black)
-	dc.DrawString(fmt.Sprintf("%4d-%02d", cal.Date.Year(), cal.Date.Month()), 600, 250)
-	DrawCalendar(dc, cal, 500, 260, 280, 200)
+	dc.DrawString(fmt.Sprintf("%4d-%02d", cal.Date.Year(), cal.Date.Month()), 600, 40)
+	DrawCalendar(dc, cal, 500, 40, 280, 200, true)
+
+	cal.Date = cal.Date.AddDate(0, 1, 0)
+	dc.SetFontFace(faces[0])
+	dc.SetColor(color.Black)
+	dc.DrawString(fmt.Sprintf("%4d-%02d", cal.Date.Year(), cal.Date.Month()), 600, 270)
+	DrawCalendar(dc, cal, 500, 270, 280, 200, false)
 
 	dc.SetFontFace(faces[1])
 
