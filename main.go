@@ -52,6 +52,10 @@ func NewCalendar() *Calendar {
 	return &Calendar{WeekLabels: DefaultWeeekLabels, IsDayOffFunc: DefaultIsDayOffFunc, Date: time.Now()}
 }
 
+func (c *Calendar) NextMonth() {
+	c.Date = c.Date.AddDate(0, 1, -c.Date.Day()+1)
+}
+
 func DrawCalendar(img *gg.Context, c *Calendar, x, y, w, h int, label bool) {
 	red := color.RGBA{255, 0, 0, 255}
 	wc := len(c.WeekLabels)
@@ -84,7 +88,7 @@ func DrawCalendar(img *gg.Context, c *Calendar, x, y, w, h int, label bool) {
 			img.SetColor(color.Black)
 		}
 		if selected == d {
-			img.DrawRectangle(float64(x+wd*colsize+1), float64(y+1), float64(colsize-2), float64(rowsize-2))
+			img.DrawRectangle(float64(x+wd*colsize+3), float64(y+1), float64(colsize-4), float64(rowsize-2))
 			img.Fill()
 			img.SetColor(color.White)
 		}
@@ -160,6 +164,7 @@ func writeImage(w io.Writer, date time.Time) error {
 	dc.DrawRectangle(0, 0, 800, 480)
 	dc.Fill()
 
+	holidays := parseHoliday(holidayCSV)
 	cal := NewCalendar()
 	cal.Date = date
 	cal.SelectedDate = date
@@ -167,7 +172,6 @@ func writeImage(w io.Writer, date time.Time) error {
 		if DefaultIsDayOffFunc(d) {
 			return true
 		}
-		holidays := parseHoliday(holidayCSV)
 		_, isholiday := holidays[[3]int{d.Year(), int(d.Month()), int(d.Day())}]
 		return isholiday
 	}
@@ -177,7 +181,7 @@ func writeImage(w io.Writer, date time.Time) error {
 	dc.DrawString(fmt.Sprintf("%4d-%02d", cal.Date.Year(), cal.Date.Month()), 600, 40)
 	DrawCalendar(dc, cal, 500, 40, 280, 200, true)
 
-	cal.Date = cal.Date.AddDate(0, 1, 0)
+	cal.NextMonth()
 	dc.SetFontFace(faces[0])
 	dc.SetColor(color.Black)
 	dc.DrawString(fmt.Sprintf("%4d-%02d", cal.Date.Year(), cal.Date.Month()), 600, 270)
