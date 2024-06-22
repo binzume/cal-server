@@ -8,6 +8,7 @@ import (
 	"image/color"
 	"image/draw"
 	"image/gif"
+	"image/png"
 	"io"
 	"log"
 	"net/http"
@@ -177,9 +178,10 @@ func parseEntry(ent []byte) *DateEntry {
 	return &d
 }
 
-func parsePath(p string) (string, time.Time) {
+func parsePath(p string) (string, time.Time, string) {
 	name := path.Base(p)
-	name = name[0 : len(name)-len(path.Ext(name))]
+	ext := path.Ext(name)
+	name = name[0 : len(name)-len(ext)]
 	date, err := time.ParseInLocation("2006-01-02", name, time.Now().Location())
 	if err != nil {
 		date = time.Now()
@@ -188,7 +190,7 @@ func parsePath(p string) (string, time.Time) {
 	if kind == "" {
 		kind = "default"
 	}
-	return kind, date
+	return kind, date, strings.ToLower(ext)
 }
 
 func loadHoliday(fname string) map[[3]int]string {
@@ -226,7 +228,7 @@ func loadFont(path string, sizes []float64) ([]font.Face, error) {
 	return faces, nil
 }
 
-func writeImage(w io.Writer, kind string, date time.Time) error {
+func writeImage(w io.Writer, kind string, date time.Time, ext string) error {
 	confMap := map[string]*CalendarConfig{}
 	toml.DecodeFile("./config.toml", &confMap)
 
@@ -324,17 +326,24 @@ func writeImage(w io.Writer, kind string, date time.Time) error {
 
 	img := image.NewPaletted(image.Rect(0, 0, 800, 480), color.Palette{color.Black, red, color.White})
 	draw.Draw(img, image.Rect(0, 0, 800, 480), dc.Image(), image.Point{}, draw.Src)
+	if ext == ".png" {
+		return png.Encode(w, img)
+	}
 	return gif.Encode(w, img, &gif.Options{NumColors: 3})
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
 	b := new(bytes.Buffer)
-	kind, date := parsePath(r.URL.Path)
-	err := writeImage(b, kind, date)
+	kind, date, ext := parsePath(r.URL.Path)
+	err := writeImage(b, kind, date, ext)
 	if err != nil {
 		log.Fatal(err)
 	}
-	w.Header().Add("content-type", "image/gif")
+	if ext == ".png" {
+		w.Header().Add("content-type", "image/png")
+	} else {
+		w.Header().Add("content-type", "image/gif")
+	}
 	w.Header().Add("content-length", fmt.Sprint(b.Len()))
 	now := time.Now()
 	sec := now.Hour()*3600 + now.Minute()*60 + now.Second()
@@ -354,8 +363,8 @@ func main() {
 			log.Fatal(err)
 		}
 		defer out.Close()
-		kind, date := parsePath(os.Args[1])
-		err = writeImage(out, kind, date)
+		kind, date, ext := parsePath(os.Args[1])
+		err = writeImage(out, kind, date, ext)
 		if err != nil {
 			log.Fatal(err)
 		}
