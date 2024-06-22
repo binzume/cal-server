@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"bytes"
-	_ "embed"
 	"fmt"
 	"image"
 	"image/color"
@@ -32,36 +31,22 @@ type CalendarConfig struct {
 	DayCountSince *DateEntry
 }
 
-type Config map[string]CalendarConfig
-
-func (c Config) Font(kind string) string {
-	if conf, ok := c[kind]; ok && conf.Font != "" {
-		return conf.Font
+func (c *CalendarConfig) Merge(conf *CalendarConfig) {
+	if conf == nil {
+		return
 	}
-	if conf, ok := c["default"]; ok && conf.Font != "" {
-		return conf.Font
+	if conf.Font != "" {
+		c.Font = conf.Font
 	}
-	return "./ipag.ttf"
-}
-
-func (c Config) Anniversary(kind string) []DateEntry {
-	if conf, ok := c[kind]; ok && conf.Anniversary != nil {
-		return conf.Anniversary
+	if conf.Holiday != "" {
+		c.Holiday = conf.Holiday
 	}
-	if conf, ok := c["default"]; ok && conf.Anniversary != nil {
-		return conf.Anniversary
+	if conf.Anniversary != nil {
+		c.Anniversary = append(c.Anniversary, conf.Anniversary...)
 	}
-	return nil
-}
-
-func (c Config) DayCountSince(kind string) *DateEntry {
-	if conf, ok := c[kind]; ok && conf.DayCountSince != nil {
-		return conf.DayCountSince
+	if conf.DayCountSince != nil {
+		c.DayCountSince = conf.DayCountSince
 	}
-	if conf, ok := c["default"]; ok && conf.DayCountSince != nil {
-		return conf.DayCountSince
-	}
-	return nil
 }
 
 // TODO github.com/binzume/gocal
@@ -145,9 +130,6 @@ func DrawCalendar(img *gg.Context, c *Calendar, x, y, w, h int, afunc func(t tim
 	}
 }
 
-//go:embed holiday.csv
-var holidayCSV string
-
 type DateEntry struct {
 	Year  int
 	Month int
@@ -209,9 +191,14 @@ func parsePath(p string) (string, time.Time) {
 	return kind, date
 }
 
-func parseHoliday(s string) map[[3]int]string {
-	scan := bufio.NewScanner(strings.NewReader(s))
+func loadHoliday(fname string) map[[3]int]string {
 	ret := map[[3]int]string{}
+	r, err := os.Open(fname)
+	if err != nil {
+		return ret
+	}
+	defer r.Close()
+	scan := bufio.NewScanner(r)
 	for scan.Scan() {
 		if d := parseEntry(scan.Bytes()); d != nil {
 			ret[[3]int{d.Year, d.Month, d.Day}] = d.Label
@@ -236,16 +223,21 @@ func loadFont(path string, sizes []float64) ([]font.Face, error) {
 			Size: sz,
 		}))
 	}
-
 	return faces, nil
 }
 
 func writeImage(w io.Writer, kind string, date time.Time) error {
-	conf := Config{}
-	toml.DecodeFile("./config.toml", &conf)
+	confMap := map[string]*CalendarConfig{}
+	toml.DecodeFile("./config.toml", &confMap)
+
+	conf := CalendarConfig{}
+	conf.Merge(confMap["default"])
+	if kind != "default" {
+		conf.Merge(confMap[kind])
+	}
 
 	anniversary := map[[3]int]string{}
-	for _, d := range conf.Anniversary(kind) {
+	for _, d := range conf.Anniversary {
 		if d.Year != 0 {
 			anniversary[[3]int{d.Year, d.Month, d.Day}] = d.Label
 		}
@@ -265,7 +257,7 @@ func writeImage(w io.Writer, kind string, date time.Time) error {
 
 	red := color.RGBA{255, 0, 0, 255}
 
-	faces, err := loadFont(conf.Font(kind), []float64{22, 72})
+	faces, err := loadFont(conf.Font, []float64{22, 72})
 	if err != nil {
 		log.Println(err)
 		faces = append(faces, basicfont.Face7x13)
@@ -277,7 +269,7 @@ func writeImage(w io.Writer, kind string, date time.Time) error {
 	dc.DrawRectangle(0, 0, 800, 480)
 	dc.Fill()
 
-	holidays := parseHoliday(holidayCSV)
+	holidays := loadHoliday(conf.Holiday)
 	cal := NewCalendar()
 	cal.Date = date
 	cal.SelectedDate = date
@@ -321,7 +313,7 @@ func writeImage(w io.Writer, kind string, date time.Time) error {
 	s = ")"
 	dc.DrawString(s, px, 260)
 
-	since := conf.DayCountSince(kind)
+	since := conf.DayCountSince
 	if since != nil {
 		days := int(cal.SelectedDate.Sub(since.Date(cal.Date.Location())).Hours()) / 24
 		dc.DrawString(fmt.Sprintf("%5d日", days), 40, 400)
