@@ -18,11 +18,51 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BurntSushi/toml"
 	"github.com/fogleman/gg"
 	"github.com/golang/freetype/truetype"
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/basicfont"
 )
+
+type CalendarConfig struct {
+	Font          string
+	Holiday       string
+	Anniversary   []DateEntry
+	DayCountSince *DateEntry
+}
+
+type Config map[string]CalendarConfig
+
+func (c Config) Font(kind string) string {
+	if conf, ok := c[kind]; ok && conf.Font != "" {
+		return conf.Font
+	}
+	if conf, ok := c["default"]; ok && conf.Font != "" {
+		return conf.Font
+	}
+	return "./ipag.ttf"
+}
+
+func (c Config) Anniversary(kind string) []DateEntry {
+	if conf, ok := c[kind]; ok && conf.Anniversary != nil {
+		return conf.Anniversary
+	}
+	if conf, ok := c["default"]; ok && conf.Anniversary != nil {
+		return conf.Anniversary
+	}
+	return nil
+}
+
+func (c Config) DayCountSince(kind string) *DateEntry {
+	if conf, ok := c[kind]; ok && conf.DayCountSince != nil {
+		return conf.DayCountSince
+	}
+	if conf, ok := c["default"]; ok && conf.DayCountSince != nil {
+		return conf.DayCountSince
+	}
+	return nil
+}
 
 // TODO github.com/binzume/gocal
 type Calendar struct {
@@ -56,7 +96,7 @@ func (c *Calendar) NextMonth() {
 	c.Date = c.Date.AddDate(0, 1, -c.Date.Day()+1)
 }
 
-func DrawCalendar(img *gg.Context, c *Calendar, x, y, w, h int, label bool) {
+func DrawCalendar(img *gg.Context, c *Calendar, x, y, w, h int, afunc func(t time.Time) bool, label bool) {
 	red := color.RGBA{255, 0, 0, 255}
 	wc := len(c.WeekLabels)
 	start := ToDate(c.Date.AddDate(0, 0, -c.Date.Day()+1))
@@ -79,6 +119,7 @@ func DrawCalendar(img *gg.Context, c *Calendar, x, y, w, h int, label bool) {
 		}
 		y += rowsize + space
 	}
+
 	for d := 0; d < numdays; d++ {
 		day := start.AddDate(0, 0, d)
 		wd := int(day.Weekday())
@@ -93,6 +134,11 @@ func DrawCalendar(img *gg.Context, c *Calendar, x, y, w, h int, label bool) {
 			img.SetColor(color.White)
 		}
 		img.DrawString(fmt.Sprintf(" %2d", day.Day()), float64(x+wd*colsize), float64(y+rowsize-5))
+		if afunc != nil && afunc(day) {
+			img.SetColor(color.Black)
+			img.DrawLine(float64(x+wd*colsize+8), float64(y+rowsize-4), float64(x+wd*colsize+colsize-4), float64(y+rowsize-4))
+			img.Stroke()
+		}
 		if wd == 6 {
 			y += rowsize
 		}
@@ -102,27 +148,74 @@ func DrawCalendar(img *gg.Context, c *Calendar, x, y, w, h int, label bool) {
 //go:embed holiday.csv
 var holidayCSV string
 
+type DateEntry struct {
+	Year  int
+	Month int
+	Day   int
+	Label string
+}
+
+func (d *DateEntry) Date(l *time.Location) time.Time {
+	return time.Date(d.Year, time.Month(d.Month), d.Day, 0, 0, 0, 0, l)
+}
+
+func (d *DateEntry) UnmarshalText(ent []byte) error {
+	row := strings.Split(string(ent), ",")
+	date := strings.Split(row[0], "/")
+	if len(date) != 3 {
+		date = strings.Split(row[0], "-")
+	}
+	if len(date) != 3 {
+		return nil
+	}
+	yy, _ := strconv.ParseInt(date[0], 10, 32)
+	mm, _ := strconv.ParseInt(date[1], 10, 32)
+	dd, _ := strconv.ParseInt(date[2], 10, 32)
+	if date[0] == "*" {
+		yy = -1
+	}
+	if date[1] == "*" {
+		mm = -1
+	}
+	d.Year = int(yy)
+	d.Month = int(mm)
+	d.Day = int(dd)
+	if len(row) >= 2 {
+		d.Label = strings.TrimSpace(row[1])
+	}
+	return nil
+}
+
+func parseEntry(ent []byte) *DateEntry {
+	d := DateEntry{}
+	d.UnmarshalText(ent)
+	if d.Year == 0 {
+		return nil
+	}
+	return &d
+}
+
+func parsePath(p string) (string, time.Time) {
+	name := path.Base(p)
+	name = name[0 : len(name)-len(path.Ext(name))]
+	date, err := time.ParseInLocation("2006-01-02", name, time.Now().Location())
+	if err != nil {
+		date = time.Now()
+	}
+	kind := path.Base(path.Dir(p))
+	if kind == "" {
+		kind = "default"
+	}
+	return kind, date
+}
+
 func parseHoliday(s string) map[[3]int]string {
 	scan := bufio.NewScanner(strings.NewReader(s))
 	ret := map[[3]int]string{}
-
 	for scan.Scan() {
-		row := strings.Split(scan.Text(), ",")
-		date := strings.Split(row[0], "/")
-		if len(date) != 3 {
-			date = strings.Split(row[0], "-")
+		if d := parseEntry(scan.Bytes()); d != nil {
+			ret[[3]int{d.Year, d.Month, d.Day}] = d.Label
 		}
-		if len(date) != 3 {
-			continue
-		}
-		yy, _ := strconv.ParseInt(date[0], 10, 32)
-		mm, _ := strconv.ParseInt(date[1], 10, 32)
-		dd, _ := strconv.ParseInt(date[2], 10, 32)
-		name := ""
-		if len(row) > 2 {
-			name = strings.TrimSpace(row[1])
-		}
-		ret[[3]int{int(yy), int(mm), int(dd)}] = name
 	}
 	return ret
 }
@@ -147,17 +240,37 @@ func loadFont(path string, sizes []float64) ([]font.Face, error) {
 	return faces, nil
 }
 
-func writeImage(w io.Writer, date time.Time) error {
+func writeImage(w io.Writer, kind string, date time.Time) error {
+	conf := Config{}
+	toml.DecodeFile("./config.toml", &conf)
+
+	anniversary := map[[3]int]string{}
+	for _, d := range conf.Anniversary(kind) {
+		if d.Year != 0 {
+			anniversary[[3]int{d.Year, d.Month, d.Day}] = d.Label
+		}
+	}
+	anniversaryFunc := func(day time.Time) bool {
+		if _, ok := anniversary[[3]int{day.Year(), int(day.Month()), day.Day()}]; ok {
+			return true
+		}
+		if _, ok := anniversary[[3]int{-1, int(day.Month()), day.Day()}]; ok {
+			return true
+		}
+		if _, ok := anniversary[[3]int{-1, -1, day.Day()}]; ok {
+			return true
+		}
+		return false
+	}
+
 	red := color.RGBA{255, 0, 0, 255}
 
-	faces, err := loadFont("./ipag.ttf", []float64{22, 72})
+	faces, err := loadFont(conf.Font(kind), []float64{22, 72})
 	if err != nil {
 		log.Println(err)
 		faces = append(faces, basicfont.Face7x13)
 		faces = append(faces, basicfont.Face7x13)
 	}
-
-	img := image.NewPaletted(image.Rect(0, 0, 800, 480), color.Palette{color.Black, red, color.White})
 
 	dc := gg.NewContext(800, 480)
 	dc.SetColor(color.White)
@@ -179,13 +292,13 @@ func writeImage(w io.Writer, date time.Time) error {
 	dc.SetFontFace(faces[0])
 	dc.SetColor(color.Black)
 	dc.DrawString(fmt.Sprintf("%4d-%02d", cal.Date.Year(), cal.Date.Month()), 600, 40)
-	DrawCalendar(dc, cal, 500, 40, 280, 200, true)
+	DrawCalendar(dc, cal, 500, 40, 280, 200, anniversaryFunc, true)
 
 	cal.NextMonth()
 	dc.SetFontFace(faces[0])
 	dc.SetColor(color.Black)
 	dc.DrawString(fmt.Sprintf("%4d-%02d", cal.Date.Year(), cal.Date.Month()), 600, 270)
-	DrawCalendar(dc, cal, 500, 270, 280, 200, false)
+	DrawCalendar(dc, cal, 500, 270, 280, 200, anniversaryFunc, false)
 
 	dc.SetFontFace(faces[1])
 
@@ -208,19 +321,24 @@ func writeImage(w io.Writer, date time.Time) error {
 	s = ")"
 	dc.DrawString(s, px, 260)
 
+	since := conf.DayCountSince(kind)
+	if since != nil {
+		days := int(cal.SelectedDate.Sub(since.Date(cal.Date.Location())).Hours()) / 24
+		dc.DrawString(fmt.Sprintf("%5d日", days), 40, 400)
+
+		dc.SetFontFace(faces[0])
+		dc.DrawString(fmt.Sprintf("since %d-%2d-%2d", since.Year, since.Month, since.Day), 160, 425)
+	}
+
+	img := image.NewPaletted(image.Rect(0, 0, 800, 480), color.Palette{color.Black, red, color.White})
 	draw.Draw(img, image.Rect(0, 0, 800, 480), dc.Image(), image.Point{}, draw.Src)
 	return gif.Encode(w, img, &gif.Options{NumColors: 3})
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
 	b := new(bytes.Buffer)
-	name := path.Base(r.URL.Path)
-	name = name[0 : len(name)-len(path.Ext(name))]
-	date, err := time.ParseInLocation("2006-01-02", name, time.Now().Location())
-	if err != nil {
-		date = time.Now()
-	}
-	err = writeImage(b, date)
+	kind, date := parsePath(r.URL.Path)
+	err := writeImage(b, kind, date)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -244,7 +362,8 @@ func main() {
 			log.Fatal(err)
 		}
 		defer out.Close()
-		err = writeImage(out, time.Now())
+		kind, date := parsePath(os.Args[1])
+		err = writeImage(out, kind, date)
 		if err != nil {
 			log.Fatal(err)
 		}

@@ -1,0 +1,4 @@
+[default]
+font = "ipag.ttf"
+holiday = "holiday.csv"
+anniversary = []
