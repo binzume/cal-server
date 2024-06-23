@@ -26,6 +26,8 @@ import (
 )
 
 type CalendarConfig struct {
+	Width         int
+	Height        int
 	Font          string
 	Holiday       string
 	Anniversary   []DateEntry
@@ -35,6 +37,12 @@ type CalendarConfig struct {
 func (c *CalendarConfig) Merge(conf *CalendarConfig) {
 	if conf == nil {
 		return
+	}
+	if conf.Width != 0 {
+		c.Width = conf.Width
+	}
+	if conf.Height != 0 {
+		c.Height = conf.Height
 	}
 	if conf.Font != "" {
 		c.Font = conf.Font
@@ -62,6 +70,9 @@ type Calendar struct {
 
 var DefaultWeeekLabels = []string{"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"}
 var JapaneseWeeekLabels = []string{"日", "月", "火", "水", "木", "金", "土"}
+var BackgroundColor = color.White
+var TextColor = color.Black
+var HolidayColor = color.RGBA{255, 0, 0, 255}
 
 func DefaultIsDayOffFunc(t time.Time) bool {
 	return t.Weekday() == time.Sunday || t.Weekday() == time.Saturday
@@ -75,7 +86,7 @@ func Today() time.Time {
 }
 
 func NewCalendar() *Calendar {
-	return &Calendar{WeekLabels: DefaultWeeekLabels, IsDayOffFunc: DefaultIsDayOffFunc, Date: time.Now()}
+	return &Calendar{WeekLabels: DefaultWeeekLabels, IsDayOffFunc: DefaultIsDayOffFunc, Date: Today()}
 }
 
 func (c *Calendar) NextMonth() {
@@ -83,7 +94,6 @@ func (c *Calendar) NextMonth() {
 }
 
 func DrawCalendar(img *gg.Context, c *Calendar, x, y, w, h int, afunc func(t time.Time) bool, label bool) {
-	red := color.RGBA{255, 0, 0, 255}
 	wc := len(c.WeekLabels)
 	start := ToDate(c.Date.AddDate(0, 0, -c.Date.Day()+1))
 	last := start.AddDate(0, 1, 0)
@@ -97,9 +107,9 @@ func DrawCalendar(img *gg.Context, c *Calendar, x, y, w, h int, afunc func(t tim
 	if label {
 		for i, d := range c.WeekLabels {
 			if i == 0 {
-				img.SetColor(red)
+				img.SetColor(HolidayColor)
 			} else {
-				img.SetColor(color.Black)
+				img.SetColor(TextColor)
 			}
 			img.DrawString(d, float64(x+i*colsize), float64(y+rowsize-4))
 		}
@@ -110,18 +120,18 @@ func DrawCalendar(img *gg.Context, c *Calendar, x, y, w, h int, afunc func(t tim
 		day := start.AddDate(0, 0, d)
 		wd := int(day.Weekday())
 		if c.IsDayOffFunc(day) {
-			img.SetColor(red)
+			img.SetColor(HolidayColor)
 		} else {
-			img.SetColor(color.Black)
+			img.SetColor(TextColor)
 		}
 		if selected == d {
 			img.DrawRectangle(float64(x+wd*colsize+3), float64(y+1), float64(colsize-4), float64(rowsize-2))
 			img.Fill()
-			img.SetColor(color.White)
+			img.SetColor(BackgroundColor)
 		}
 		img.DrawString(fmt.Sprintf(" %2d", day.Day()), float64(x+wd*colsize), float64(y+rowsize-5))
 		if afunc != nil && afunc(day) {
-			img.SetColor(color.Black)
+			img.SetColor(TextColor)
 			img.DrawLine(float64(x+wd*colsize+8), float64(y+rowsize-4), float64(x+wd*colsize+colsize-4), float64(y+rowsize-4))
 			img.Stroke()
 		}
@@ -136,6 +146,10 @@ type DateEntry struct {
 	Month int
 	Day   int
 	Label string
+}
+
+func (d *DateEntry) Key() [3]int {
+	return [3]int{d.Year, int(d.Month), int(d.Day)}
 }
 
 func (d *DateEntry) Date(l *time.Location) time.Time {
@@ -169,15 +183,6 @@ func (d *DateEntry) UnmarshalText(ent []byte) error {
 	return nil
 }
 
-func parseEntry(ent []byte) *DateEntry {
-	d := DateEntry{}
-	d.UnmarshalText(ent)
-	if d.Year == 0 {
-		return nil
-	}
-	return &d
-}
-
 func parsePath(p string) (string, time.Time, string) {
 	name := path.Base(p)
 	ext := path.Ext(name)
@@ -186,11 +191,11 @@ func parsePath(p string) (string, time.Time, string) {
 	if err != nil {
 		date = time.Now()
 	}
-	kind := path.Base(path.Dir(p))
-	if kind == "" {
-		kind = "default"
+	confName := path.Base(path.Dir(p))
+	if confName == "" {
+		confName = "default"
 	}
-	return kind, date, strings.ToLower(ext)
+	return confName, date, strings.ToLower(ext)
 }
 
 func loadHoliday(fname string) map[[3]int]string {
@@ -202,8 +207,10 @@ func loadHoliday(fname string) map[[3]int]string {
 	defer r.Close()
 	scan := bufio.NewScanner(r)
 	for scan.Scan() {
-		if d := parseEntry(scan.Bytes()); d != nil {
-			ret[[3]int{d.Year, d.Month, d.Day}] = d.Label
+		d := DateEntry{}
+		d.UnmarshalText(scan.Bytes())
+		if d.Year != 0 {
+			ret[d.Key()] = d.Label
 		}
 	}
 	return ret
@@ -228,21 +235,18 @@ func loadFont(path string, sizes []float64) ([]font.Face, error) {
 	return faces, nil
 }
 
-func writeImage(w io.Writer, kind string, date time.Time, ext string) error {
+func writeImage(w io.Writer, confName string, date time.Time, ext string) error {
 	confMap := map[string]*CalendarConfig{}
 	toml.DecodeFile("./config.toml", &confMap)
-
-	conf := CalendarConfig{}
+	conf := CalendarConfig{Width: 800, Height: 480}
 	conf.Merge(confMap["default"])
-	if kind != "default" {
-		conf.Merge(confMap[kind])
+	if confName != "default" {
+		conf.Merge(confMap[confName])
 	}
 
 	anniversary := map[[3]int]string{}
 	for _, d := range conf.Anniversary {
-		if d.Year != 0 {
-			anniversary[[3]int{d.Year, d.Month, d.Day}] = d.Label
-		}
+		anniversary[d.Key()] = d.Label
 	}
 	anniversaryFunc := func(day time.Time) bool {
 		if _, ok := anniversary[[3]int{day.Year(), int(day.Month()), day.Day()}]; ok {
@@ -257,8 +261,6 @@ func writeImage(w io.Writer, kind string, date time.Time, ext string) error {
 		return false
 	}
 
-	red := color.RGBA{255, 0, 0, 255}
-
 	faces, err := loadFont(conf.Font, []float64{22, 72})
 	if err != nil {
 		log.Println(err)
@@ -266,9 +268,9 @@ func writeImage(w io.Writer, kind string, date time.Time, ext string) error {
 		faces = append(faces, basicfont.Face7x13)
 	}
 
-	dc := gg.NewContext(800, 480)
-	dc.SetColor(color.White)
-	dc.DrawRectangle(0, 0, 800, 480)
+	dc := gg.NewContext(conf.Width, conf.Height)
+	dc.SetColor(BackgroundColor)
+	dc.DrawRectangle(0, 0, float64(conf.Width), float64(conf.Height))
 	dc.Fill()
 
 	holidays := loadHoliday(conf.Holiday)
@@ -284,34 +286,34 @@ func writeImage(w io.Writer, kind string, date time.Time, ext string) error {
 	}
 
 	dc.SetFontFace(faces[0])
-	dc.SetColor(color.Black)
+	dc.SetColor(TextColor)
 	dc.DrawString(fmt.Sprintf("%4d-%02d", cal.Date.Year(), cal.Date.Month()), 600, 40)
 	DrawCalendar(dc, cal, 500, 40, 280, 200, anniversaryFunc, true)
 
 	cal.NextMonth()
 	dc.SetFontFace(faces[0])
-	dc.SetColor(color.Black)
+	dc.SetColor(TextColor)
 	dc.DrawString(fmt.Sprintf("%4d-%02d", cal.Date.Year(), cal.Date.Month()), 600, 270)
 	DrawCalendar(dc, cal, 500, 270, 280, 200, anniversaryFunc, false)
 
 	dc.SetFontFace(faces[1])
 
 	px := float64(40)
-	dc.SetColor(color.Black)
+	dc.SetColor(TextColor)
 	s := fmt.Sprintf("%2d月%2d日(", date.Month(), date.Day())
 	dc.DrawString(s, px, 260)
 	sw, _ := dc.MeasureString(s)
 	px += sw
 	if date.Weekday() == 0 {
-		dc.SetColor(red)
+		dc.SetColor(HolidayColor)
 	} else {
-		dc.SetColor(color.Black)
+		dc.SetColor(TextColor)
 	}
 	s = JapaneseWeeekLabels[date.Weekday()]
 	dc.DrawString(s, px, 260)
 	sw, _ = dc.MeasureString(s)
 	px += sw
-	dc.SetColor(color.Black)
+	dc.SetColor(TextColor)
 	s = ")"
 	dc.DrawString(s, px, 260)
 
@@ -324,18 +326,21 @@ func writeImage(w io.Writer, kind string, date time.Time, ext string) error {
 		dc.DrawString(fmt.Sprintf("since %d-%2d-%2d", since.Year, since.Month, since.Day), 160, 425)
 	}
 
-	img := image.NewPaletted(image.Rect(0, 0, 800, 480), color.Palette{color.Black, red, color.White})
-	draw.Draw(img, image.Rect(0, 0, 800, 480), dc.Image(), image.Point{}, draw.Src)
+	rect := image.Rect(0, 0, conf.Width, conf.Height)
 	if ext == ".png" {
-		return png.Encode(w, img)
+		return png.Encode(w, dc.Image())
 	}
+	img := image.NewPaletted(rect, color.Palette{TextColor, HolidayColor, BackgroundColor})
+	draw.Draw(img, rect, dc.Image(), image.Point{}, draw.Src)
 	return gif.Encode(w, img, &gif.Options{NumColors: 3})
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
 	b := new(bytes.Buffer)
-	kind, date, ext := parsePath(r.URL.Path)
-	err := writeImage(b, kind, date, ext)
+	confName, date, ext := parsePath(r.URL.Path)
+	offsetSec, _ := strconv.Atoi(r.FormValue("offset"))
+	date = date.Add(time.Duration(offsetSec) * time.Second)
+	err := writeImage(b, confName, date, ext)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -351,20 +356,39 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	io.Copy(w, b)
 }
 
-func main() {
-	fixedtz := os.Getenv("FIXED_TZ") // ex: JST-9
-	if p := strings.LastIndexAny(fixedtz, "+-"); p >= 0 {
-		offset, _ := strconv.Atoi(fixedtz[p:])
-		time.Local = time.FixedZone(fixedtz, -offset*3600)
+// https://www.gnu.org/software/libc/manual/html_node/TZ-Variable.html
+func applyPosixTZ() {
+	fixedtz := os.Getenv("TZ")
+	p := strings.IndexAny(fixedtz, "+-")
+	if p < 0 {
+		return
 	}
+	sign := -1
+	if fixedtz[p] == '-' {
+		sign = +1
+	}
+	var offsetHour, offsetMin, offsetSec int
+	offset := strings.Split(fixedtz[p+1:], ":")
+	offsetHour, _ = strconv.Atoi(offset[0])
+	if len(offset) >= 2 {
+		offsetMin, _ = strconv.Atoi(offset[1])
+	}
+	if len(offset) >= 3 {
+		offsetSec, _ = strconv.Atoi(offset[2])
+	}
+	time.Local = time.FixedZone(fixedtz, sign*(offsetHour*3600+offsetMin*60+offsetSec))
+}
+
+func main() {
+	applyPosixTZ()
 	if len(os.Args) == 2 {
 		out, err := os.Create(os.Args[1])
 		if err != nil {
 			log.Fatal(err)
 		}
 		defer out.Close()
-		kind, date, ext := parsePath(os.Args[1])
-		err = writeImage(out, kind, date, ext)
+		confName, date, ext := parsePath(os.Args[1])
+		err = writeImage(out, confName, date, ext)
 		if err != nil {
 			log.Fatal(err)
 		}
