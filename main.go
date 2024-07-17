@@ -350,10 +350,11 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		w.Header().Add("content-type", "image/gif")
 	}
 	w.Header().Add("content-length", fmt.Sprint(b.Len()))
-	now := time.Now()
-	sec := now.Hour()*3600 + now.Minute()*60 + now.Second()
-	w.Header().Add("x-expire-sec", fmt.Sprint(86400-sec))
+	next := ToDate(date).AddDate(0, 0, 1).Unix() - time.Now().Unix()
+	w.Header().Add("x-expire-sec", fmt.Sprint(next))
+	w.Header().Add("refresh", fmt.Sprint(next))
 	io.Copy(w, b)
+	log.Println(r.URL.Path)
 }
 
 // https://www.gnu.org/software/libc/manual/html_node/TZ-Variable.html
