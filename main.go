@@ -30,7 +30,8 @@ type CalendarConfig struct {
 	Height        int
 	Font          string
 	Holiday       string
-	Anniversary   []DateEntry
+	Anniversary   []*DateEntry
+	Background    []*DateEntry
 	DayCountSince *DateEntry
 }
 
@@ -52,6 +53,9 @@ func (c *CalendarConfig) Merge(conf *CalendarConfig) {
 	}
 	if conf.Anniversary != nil {
 		c.Anniversary = append(c.Anniversary, conf.Anniversary...)
+	}
+	if conf.Background != nil {
+		c.Background = append(c.Background, conf.Background...)
 	}
 	if conf.DayCountSince != nil {
 		c.DayCountSince = conf.DayCountSince
@@ -93,7 +97,7 @@ func (c *Calendar) NextMonth() {
 	c.Date = c.Date.AddDate(0, 1, -c.Date.Day()+1)
 }
 
-func DrawCalendar(img *gg.Context, c *Calendar, x, y, w, h int, afunc func(t time.Time) bool, label bool) {
+func DrawCalendar(img *gg.Context, c *Calendar, x, y, w, h int, afunc func(t time.Time) *DateEntry, label bool) {
 	wc := len(c.WeekLabels)
 	start := ToDate(c.Date.AddDate(0, 0, -c.Date.Day()+1))
 	last := start.AddDate(0, 1, 0)
@@ -130,7 +134,7 @@ func DrawCalendar(img *gg.Context, c *Calendar, x, y, w, h int, afunc func(t tim
 			img.SetColor(BackgroundColor)
 		}
 		img.DrawString(fmt.Sprintf(" %2d", day.Day()), float64(x+wd*colsize), float64(y+rowsize-5))
-		if afunc != nil && afunc(day) {
+		if afunc != nil && afunc(day) != nil {
 			img.SetColor(TextColor)
 			img.DrawLine(float64(x+wd*colsize+8), float64(y+rowsize-4), float64(x+wd*colsize+colsize-4), float64(y+rowsize-4))
 			img.Stroke()
@@ -165,14 +169,17 @@ func (d *DateEntry) UnmarshalText(ent []byte) error {
 	if len(date) != 3 {
 		return nil
 	}
-	yy, _ := strconv.ParseInt(date[0], 10, 32)
-	mm, _ := strconv.ParseInt(date[1], 10, 32)
-	dd, _ := strconv.ParseInt(date[2], 10, 32)
+	yy, _ := strconv.Atoi(date[0])
+	mm, _ := strconv.Atoi(date[1])
+	dd, _ := strconv.Atoi(date[2])
 	if date[0] == "*" {
 		yy = -1
 	}
 	if date[1] == "*" {
 		mm = -1
+	}
+	if date[2] == "*" {
+		dd = -1
 	}
 	d.Year = int(yy)
 	d.Month = int(mm)
@@ -198,8 +205,8 @@ func parsePath(p string) (string, time.Time, string) {
 	return confName, date, strings.ToLower(ext)
 }
 
-func loadHoliday(fname string) map[[3]int]string {
-	ret := map[[3]int]string{}
+func loadHoliday(fname string) []*DateEntry {
+	ret := []*DateEntry{}
 	r, err := os.Open(fname)
 	if err != nil {
 		return ret
@@ -210,7 +217,7 @@ func loadHoliday(fname string) map[[3]int]string {
 		d := DateEntry{}
 		d.UnmarshalText(scan.Bytes())
 		if d.Year != 0 {
-			ret[d.Key()] = d.Label
+			ret = append(ret, &d)
 		}
 	}
 	return ret
@@ -235,6 +242,32 @@ func loadFont(path string, sizes []float64) ([]font.Face, error) {
 	return faces, nil
 }
 
+func newDateMatcher(entries []*DateEntry) func(day time.Time) *DateEntry {
+	entryMap := map[[3]int]*DateEntry{}
+	for _, d := range entries {
+		entryMap[d.Key()] = d
+	}
+
+	return func(day time.Time) *DateEntry {
+		if d, ok := entryMap[[3]int{day.Year(), int(day.Month()), day.Day()}]; ok {
+			return d
+		}
+		if d, ok := entryMap[[3]int{-1, int(day.Month()), day.Day()}]; ok {
+			return d
+		}
+		if d, ok := entryMap[[3]int{-1, -1, day.Day()}]; ok {
+			return d
+		}
+		if d, ok := entryMap[[3]int{day.Year(), int(day.Month()), -1}]; ok {
+			return d
+		}
+		if d, ok := entryMap[[3]int{-1, int(day.Month()), -1}]; ok {
+			return d
+		}
+		return nil
+	}
+}
+
 func writeImage(w io.Writer, confName string, date time.Time, ext string) error {
 	confMap := map[string]*CalendarConfig{}
 	toml.DecodeFile("./config.toml", &confMap)
@@ -244,22 +277,7 @@ func writeImage(w io.Writer, confName string, date time.Time, ext string) error 
 		conf.Merge(confMap[confName])
 	}
 
-	anniversary := map[[3]int]string{}
-	for _, d := range conf.Anniversary {
-		anniversary[d.Key()] = d.Label
-	}
-	anniversaryFunc := func(day time.Time) bool {
-		if _, ok := anniversary[[3]int{day.Year(), int(day.Month()), day.Day()}]; ok {
-			return true
-		}
-		if _, ok := anniversary[[3]int{-1, int(day.Month()), day.Day()}]; ok {
-			return true
-		}
-		if _, ok := anniversary[[3]int{-1, -1, day.Day()}]; ok {
-			return true
-		}
-		return false
-	}
+	anniversaryFunc := newDateMatcher(conf.Anniversary)
 
 	faces, err := loadFont(conf.Font, []float64{22, 72})
 	if err != nil {
@@ -273,7 +291,21 @@ func writeImage(w io.Writer, confName string, date time.Time, ext string) error 
 	dc.DrawRectangle(0, 0, float64(conf.Width), float64(conf.Height))
 	dc.Fill()
 
-	holidays := loadHoliday(conf.Holiday)
+	backgrounds := newDateMatcher(conf.Background)
+	if b := backgrounds(date); b != nil {
+		r, err := os.Open(b.Label)
+		if err == nil {
+			defer r.Close()
+			i, _, err := image.Decode(r)
+			if err == nil {
+				dc.DrawImage(i, 0, 0)
+			} else {
+				log.Println(err)
+			}
+		}
+	}
+
+	holidays := newDateMatcher(loadHoliday(conf.Holiday))
 	cal := NewCalendar()
 	cal.Date = date
 	cal.SelectedDate = date
@@ -281,8 +313,7 @@ func writeImage(w io.Writer, confName string, date time.Time, ext string) error 
 		if DefaultIsDayOffFunc(d) {
 			return true
 		}
-		_, isholiday := holidays[[3]int{d.Year(), int(d.Month()), int(d.Day())}]
-		return isholiday
+		return holidays(d) != nil
 	}
 
 	dc.SetFontFace(faces[0])
